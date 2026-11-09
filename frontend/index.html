@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Document Assistant</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M10 9h9l4 4v10H10z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- Sign in / register -->
+  <main id="auth-view" class="auth" hidden>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Document Assistant</div>
+      <h1 id="auth-title">Sign in</h1>
+      <p class="muted">Ask questions about your documents and get answers with sources.</p>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-login" aria-selected="true" class="tab active">Sign in</button>
+        <button type="button" role="tab" id="tab-register" aria-selected="false" class="tab">Create account</button>
+      </div>
+      <form id="auth-form" novalidate>
+        <label for="auth-email">E-mail</label>
+        <input id="auth-email" name="email" type="email" autocomplete="email" required>
+        <label for="auth-password">Password</label>
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" required minlength="10">
+        <p id="password-hint" class="hint" hidden>At least 10 characters.</p>
+        <p id="auth-error" class="form-error" role="alert" hidden></p>
+        <button id="auth-submit" type="submit" class="btn primary wide">Sign in</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Application -->
+  <div id="app-view" class="app" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Conversations and documents">
+      <div class="sidebar-head">
+        <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Document Assistant</div>
+        <button type="button" id="close-sidebar" class="icon-btn only-mobile" aria-label="Close menu">✕</button>
+      </div>
+      <button type="button" id="new-chat" class="btn primary wide">+ New conversation</button>
+
+      <section class="panel" aria-labelledby="conv-heading">
+        <h2 id="conv-heading">Conversations</h2>
+        <ul id="conversation-list" class="list"></ul>
+        <p id="conversation-empty" class="empty-note">No conversations yet.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="docs-heading">
+        <h2 id="docs-heading">Documents</h2>
+        <label id="dropzone" class="dropzone" for="file-input" tabindex="0">
+          <input id="file-input" type="file" multiple accept=".pdf,.docx,.pptx,.csv,.txt,.md" class="visually-hidden">
+          <strong>Upload documents</strong>
+          <span class="muted">Drop files or click · PDF, DOCX, PPTX, CSV, TXT, MD</span>
+        </label>
+        <div id="upload-progress" class="progress" hidden>
+          <div class="progress-bar"><span id="upload-progress-bar"></span></div>
+          <span id="upload-progress-text" class="muted small"></span>
+        </div>
+        <ul id="document-list" class="list docs"></ul>
+        <p id="document-empty" class="empty-note">No documents uploaded.</p>
+      </section>
+
+      <div class="sidebar-foot">
+        <span id="user-email" class="muted small"></span>
+        <button type="button" id="logout" class="btn ghost small">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="chat" aria-labelledby="chat-title">
+      <header class="chat-head">
+        <button type="button" id="open-sidebar" class="icon-btn only-mobile" aria-label="Open menu">☰</button>
+        <h1 id="chat-title">New conversation</h1>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
+        <div id="welcome" class="welcome">
+          <h2>Ask about your documents</h2>
+          <p class="muted">Upload a document on the left, wait until it shows <em>ready</em>, then ask a question.
+            Answers cite the passages they are based on; if your documents don't contain the answer,
+            the assistant will say so instead of guessing.</p>
+          <div class="suggestions">
+            <button type="button" class="chip suggestion">Summarize the key findings</button>
+            <button type="button" class="chip suggestion">What metrics or KPIs are mentioned?</button>
+            <button type="button" class="chip suggestion">Which documents have I uploaded?</button>
+          </div>
+        </div>
+      </div>
+
+      <form id="composer" class="composer">
+        <label for="prompt" class="visually-hidden">Message</label>
+        <textarea id="prompt" rows="1" maxlength="4000" placeholder="Ask a question about your documents…" required></textarea>
+        <button id="send" type="submit" class="btn primary" aria-label="Send">Send</button>
+      </form>
+      <p class="composer-note muted small">Enter to send · Shift+Enter for a new line</p>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <template id="tpl-dialog">
+    <div class="backdrop"><div class="dialog" role="dialog" aria-modal="true"></div></div>
+  </template>
+</body>
+</html>

@@ -1,6 +1,19 @@
+# Secrets: never commit real environment files
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
 venv/
 __pycache__/
-*.pyc
-.env
-*.zip
-*.pptx
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Runtime data (SQLite database, uploaded documents)
+data/
+*.db
+*.db-wal
+*.db-shm
