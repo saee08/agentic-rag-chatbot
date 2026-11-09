@@ -61,6 +61,7 @@ class SearchHit(BaseModel):
     page: int | None
     text: str
     score: float
+    match: str
 
 
 class SearchDocumentsOutput(BaseModel):
@@ -90,7 +91,7 @@ class SearchDocumentsTool(Tool):
 
 def _hit(c: ScoredChunk) -> SearchHit:
     return SearchHit(chunk_id=c.chunk_id, document_id=c.document_id, document_name=c.document_name,
-                     page=c.page, text=c.text, score=c.score)
+                     page=c.page, text=c.text, score=c.score, match=c.match)
 
 
 # --- list_documents ----------------------------------------------------------------------------

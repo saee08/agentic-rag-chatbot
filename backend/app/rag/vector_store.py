@@ -35,6 +35,7 @@ class ScoredChunk:
     ordinal: int
     text: str
     score: float  # cosine similarity in [-1, 1]
+    match: str = "semantic"  # "semantic", "keyword" or "semantic+keyword"
 
 
 class VectorStore:
@@ -116,3 +117,15 @@ class VectorStore:
             for score, cid in best
             if cid in rows
         ]
+
+    def score_chunks(self, session: Session, owner_id: str, query_vector: np.ndarray,
+                     chunk_ids: Sequence[str]) -> list[ScoredChunk]:
+        """Cosine scores for specific chunks (e.g. keyword hits), owner- and status-filtered."""
+        if not chunk_ids:
+            return []
+        query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
+        stmt = select(Chunk.id, Chunk.document_id, Document.filename, Chunk.page_number, Chunk.ordinal,
+                      Chunk.text, Chunk.embedding).where(Chunk.id.in_(list(chunk_ids)))
+        rows = session.execute(self._base_filter(stmt, owner_id, None)).all()
+        return [ScoredChunk(r.id, r.document_id, r.filename, r.page_number, r.ordinal, r.text,
+                            round(float(np.dot(r.embedding, query)), 4)) for r in rows]

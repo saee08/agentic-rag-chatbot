@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -95,37 +95,69 @@ class ConversationOut(BaseModel):
     updated_at: datetime
 
 
-class Citation(BaseModel):
+MessageStatus = Literal["sent", "answered", "no_answer", "no_documents", "direct_reply", "error"]
+
+
+class SourceOut(BaseModel):
+    """One cited passage. ``number`` matches the [n] markers in the answer text."""
+
     number: int
     document_id: str | None
     document_name: str
-    page: int | None
+    page_number: int | None
     chunk_id: str | None
+    excerpt: str  # the most relevant sentence(s), verbatim from the passage
+    content: str  # the full retrieved passage
     score: float | None
-    snippet: str
+    match: str | None  # "semantic", "keyword" or "semantic+keyword"
+
+
+class RetrievalStats(BaseModel):
+    passages_retrieved: int | None  # distinct passages the agent gathered (None for legacy messages)
+    passages_cited: int
+    documents: int  # distinct documents among cited passages
+    pages: int  # distinct (document, page) pairs among cited passages
+
+
+class TokenUsage(BaseModel):
+    prompt: int
+    completion: int
+    total: int
+
+
+class MessageMetadata(BaseModel):
+    model: str | None
+    latency_ms: float | None
+    llm_calls: int | None
+    tokens: TokenUsage | None
+    grounded: bool | None
+    retrieval: RetrievalStats
+
+
+class StepOut(BaseModel):
+    """A user-safe description of one processing stage (no prompts or model reasoning)."""
+
+    kind: Literal["search", "library", "assess", "generate", "stop"]
+    label: str
+    detail: str | None = None
+
+
+class ErrorInfo(BaseModel):
+    code: str
+    message: str
+    retryable: bool
 
 
 class MessageOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: str
-    role: str
-    content: str
-    status: str | None = None
-    citations: list[Citation] = Field(default_factory=list)
-    agent_trace: list[dict[str, Any]] = Field(default_factory=list)
-    usage: dict[str, Any] | None = None
+    role: Literal["user", "assistant"]
+    status: MessageStatus
+    content: str  # Markdown answer, the user's text, or a user-safe error message; never null
+    sources: list[SourceOut] = Field(default_factory=list)
+    metadata: MessageMetadata | None = None  # assistant replies only
+    steps: list[StepOut] = Field(default_factory=list)
+    error: ErrorInfo | None = None  # set iff status == "error"
     created_at: datetime
-
-    @field_validator("role", mode="before")
-    @classmethod
-    def _role(cls, v: Any) -> str:
-        return getattr(v, "value", v)
-
-    @field_validator("citations", "agent_trace", mode="before")
-    @classmethod
-    def _none_to_list(cls, v: Any) -> Any:
-        return v or []
 
 
 class ConversationDetail(ConversationOut):

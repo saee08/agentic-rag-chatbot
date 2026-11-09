@@ -24,20 +24,21 @@ def test_full_document_question_answering_flow(client, fake_llm):
     reply = ask(client, alice, conv, "What were the key performance indicators?")["assistant_message"]
     assert reply["status"] == "answered"
     assert "94 percent" in reply["content"]
-    assert reply["citations"], "answer must cite its sources"
-    citation = reply["citations"][0]
+    assert reply["sources"], "answer must cite its sources"
+    citation = reply["sources"][0]
     assert citation["document_id"] == doc["id"]
     assert citation["document_name"] == "acme-report.pdf"
-    assert citation["page"] == 1
-    assert "customer retention" in citation["snippet"]
+    assert citation["page_number"] == 1 and citation["number"] == 1
+    assert "customer retention" in citation["content"] and "customer retention" in citation["excerpt"]
     assert f"[{citation['number']}]" in reply["content"]
-    assert any(step["name"] == "search_documents" for step in reply["agent_trace"])
+    assert any(step["kind"] == "search" for step in reply["steps"])
+    assert reply["metadata"]["retrieval"]["documents"] == 1 and reply["error"] is None
 
     # 3. An unrelated question must not produce an invented answer.
     calls_before = fake_llm.calls
     unrelated = ask(client, alice, conv, "What is the boiling point of tungsten?")["assistant_message"]
     assert unrelated["status"] == "no_answer"
-    assert unrelated["citations"] == []
+    assert unrelated["sources"] == []
     assert "couldn't find" in unrelated["content"]
     assert "answer" not in fake_llm.kinds()[calls_before:], "no answer generation without evidence"
 

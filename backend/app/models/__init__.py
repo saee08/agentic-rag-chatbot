@@ -190,6 +190,7 @@ class Message(TimestampMixin, Base):
     role: Mapped[MessageRole] = mapped_column(_enum(MessageRole, "message_role"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str | None] = mapped_column(String(30))
+    error_code: Mapped[str | None] = mapped_column(String(50))
     citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     agent_trace: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     usage: Mapped[dict[str, Any] | None] = mapped_column(JSON)

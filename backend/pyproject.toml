@@ -58,6 +58,8 @@ ignore = ["S101", "B008"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S108", "S311", "SIM905"]
 "alembic/**" = ["E501"]
+"app/rag/prompts.py" = ["E501"]  # prompt prose
+"app/rag/keyword_search.py" = ["S608", "SIM905"]  # constant SQL fragments only; values are bound
 
 [tool.ruff.lint.isort]
 known-third-party = ["alembic"]

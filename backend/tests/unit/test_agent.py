@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -175,7 +176,7 @@ def test_streaming_emits_tokens_matching_final_answer(env):
         env.ctx, "key performance indicators customer retention", [], stream=True))
     streamed = "".join(e.delta for e in events if e.type == "token")
     assert events[-1].outcome.status == "answered"
-    assert streamed.strip() == events[-1].outcome.answer
+    assert re.sub(r"\s*\[\d+\]", "", streamed).strip() == re.sub(r"\s*\[\d+\]", "", events[-1].outcome.answer)
 
 
 def test_registry_enforces_permissions_and_validation(env):
@@ -205,3 +206,12 @@ def test_registry_enforces_permissions_and_validation(env):
 def test_parse_decision(text, expected):
     decision = parse_decision(text)
     assert (decision.action if decision else None) == expected
+
+
+def test_planner_cannot_skip_generation_when_evidence_exists(env):
+    """The planner sees only previews; with relevant passages the answer step must still read them."""
+    env.llm.controller = lambda user: '{"action": "cannot_answer"}'
+    env.llm.answer = lambda q, sources: f"The documents do not specify this value [{sources[0][0]}]."
+    outcome = env.runner(strong_score=0.99).run(env.ctx, "customer retention target", [])
+    assert "answer" in env.llm.kinds()
+    assert outcome.status == "answered" and "do not specify" in outcome.answer

@@ -19,6 +19,7 @@ streaming (SSE) endpoints.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -83,6 +84,8 @@ class AgentOutcome:
     usage: Usage
     llm_calls: int
     elapsed_ms: float
+    model: str | None = None  # model that generated the final reply (None if no generation call)
+    passages_retrieved: int = 0  # distinct passages gathered by all searches
 
 
 @dataclass
@@ -139,26 +142,26 @@ class _State:
     library: ListDocumentsOutput | None = None
     observations: list[str] = field(default_factory=list)
     tried_queries: set[str] = field(default_factory=set)
+    model: str | None = None
 
     def add_hits(self, output: SearchDocumentsOutput) -> int:
         added = 0
         for hit in output.hits:
             existing = self.evidence.get(hit.chunk_id)
+            evidence = Evidence(0, hit.text, hit.document_id, hit.document_name, hit.page, hit.chunk_id,
+                                hit.score, hit.match)
             if existing is None:
-                self.evidence[hit.chunk_id] = Evidence(0, hit.text, hit.document_id, hit.document_name,
-                                                       hit.page, hit.chunk_id, hit.score)
+                self.evidence[hit.chunk_id] = evidence
                 added += 1
             elif (existing.score or 0) < hit.score:
-                self.evidence[hit.chunk_id] = Evidence(0, hit.text, hit.document_id, hit.document_name,
-                                                       hit.page, hit.chunk_id, hit.score)
+                self.evidence[hit.chunk_id] = evidence
         return added
 
     def numbered_evidence(self) -> list[Evidence]:
         ranked = sorted(self.evidence.values(), key=lambda e: e.score or 0, reverse=True)[:_MAX_EVIDENCE]
         # Present sources in document order so the answer reads naturally.
         ranked.sort(key=lambda e: (e.document_name, e.page or 0))
-        items = [Evidence(i, e.text, e.document_id, e.document_name, e.page, e.chunk_id, e.score)
-                 for i, e in enumerate(ranked, start=1)]
+        items = [dataclasses.replace(e, number=i) for i, e in enumerate(ranked, start=1)]
         if self.library is not None:
             listing = "\n".join(
                 f"- {d.name} ({d.file_type.lstrip('.')}, status: {d.status}"
@@ -267,7 +270,7 @@ class AgentRunner:
 
         def final(status: AgentStatus, answer: str, cited: list[Evidence], grounded: bool) -> AgentEvent:
             outcome = AgentOutcome(status, answer, cited, grounded, st.trace, st.usage, st.llm_calls,
-                                   round((time.monotonic() - st.started) * 1000, 2))
+                                   round((time.monotonic() - st.started) * 1000, 2), st.model, len(st.evidence))
             log_event(logger, "agent run", status=status, tool_calls=st.tool_calls, llm_calls=st.llm_calls,
                       tokens=st.usage.total_tokens, elapsed_ms=outcome.elapsed_ms, citations=len(cited))
             return AgentEvent("final", outcome=outcome)
@@ -330,7 +333,10 @@ class AgentRunner:
                                       direct=True, final=final)
             return
         evidence = st.numbered_evidence()
-        if action == "cannot_answer" or not evidence:
+        # The controller only sees short previews, so "cannot_answer" ends the search but does not
+        # override evidence: if relevant passages were found, the answer step reads them in full and
+        # decides (it can still reply INSUFFICIENT_EVIDENCE). Without evidence, no LLM call is made.
+        if not evidence:
             yield AgentEvent("step", step=self._stop(st, "insufficient_evidence"))
             yield final("no_answer", prompts.NO_ANSWER_MESSAGE, [], False)
             return
@@ -345,6 +351,7 @@ class AgentRunner:
         else:
             result = self._llm(st, messages, self.limits.answer_max_tokens)
             text = result.text
+        st.model = result.model
         step = AgentStep("generation", "direct_reply" if direct else "answer",
                          {"sources": len(evidence), "tokens": result.usage.total_tokens,
                           "finish_reason": result.finish_reason},
@@ -356,7 +363,8 @@ class AgentRunner:
             return
         checked = check_answer(text, evidence)
         step.detail.update(grounded=checked.grounded, cited=len(checked.cited),
-                           removed_citations=checked.removed_citations)
+                           removed_citations=checked.removed_citations, calculations=checked.calculations,
+                           corrected_calculations=checked.corrections)
         if checked.insufficient or not checked.text:
             yield final("no_answer", prompts.NO_ANSWER_MESSAGE, [], False)
             return

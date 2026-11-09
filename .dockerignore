@@ -13,3 +13,5 @@ audit
 backend/tests
 *.zip
 *.pptx
+frontend/tests
+frontend/package.json

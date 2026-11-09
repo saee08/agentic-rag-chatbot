@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,10 @@ def ready_user(client) -> dict:
     doc = upload(client, h, "acme.txt", ACME_REPORT.encode())["items"][0]["document"]
     assert wait_for_document(client, h, doc["id"])["status"] == "ready"
     return h
+
+
+def strip_citations(text: str) -> str:
+    return re.sub(r"\s*\[\d+\]", "", text).strip()
 
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
@@ -33,7 +38,7 @@ def test_conversation_history_is_persisted(client):
     assert [m["role"] for m in detail["messages"]] == ["user", "assistant", "user", "assistant"]
     assert detail["title"] == "Which factories were opened?"
     assert "Dana Whitfield" in detail["messages"][3]["content"]
-    assert detail["messages"][3]["usage"]["total_tokens"] > 0
+    assert detail["messages"][3]["metadata"]["tokens"]["total"] > 0
     listed = client.get("/api/v1/conversations", headers=h).json()["items"]
     assert [c["id"] for c in listed] == [conv]
 
@@ -59,8 +64,9 @@ def test_streaming_endpoint_emits_steps_tokens_and_final(client):
     assert "step" in kinds and "token" in kinds
     streamed = "".join(d["delta"] for e, d in events if e == "token")
     final = events[-1][1]
-    assert final["status"] == "answered" and final["citations"]
-    assert streamed.strip() == final["content"]
+    assert final["status"] == "answered" and final["sources"]
+    # Citation markers are renumbered after streaming; the words must match exactly.
+    assert strip_citations(streamed) == strip_citations(final["content"])
     # The streamed message is persisted like a normal one.
     stored = client.get(f"/api/v1/conversations/{conv}", headers=h).json()["messages"]
     assert stored[-1]["id"] == final["id"]
@@ -77,7 +83,7 @@ def test_llm_outage_returns_503_and_records_error(tmp_path):
                    json={"content": "key performance indicators customer retention"})
         assert r.status_code == 503
         body = r.json()["error"]
-        assert body["code"] == "service_unavailable" and body["request_id"]
+        assert body["code"] == "llm_unavailable" and body["request_id"]
         messages = c.get(f"/api/v1/conversations/{conv}", headers=h).json()["messages"]
         assert [m["role"] for m in messages] == ["user", "assistant"] and messages[1]["status"] == "error"
 
@@ -92,7 +98,10 @@ def test_llm_outage_in_stream_emits_error_event(tmp_path):
         with c.stream("POST", f"/api/v1/conversations/{conv}/messages/stream", headers=h,
                       json={"content": "key performance indicators customer retention"}) as r:
             events = parse_sse(r.read().decode())
-        assert events[-1][0] == "error" and events[-1][1]["code"] == "service_unavailable"
+        final = events[-1][1]
+        assert events[-1][0] == "final" and final["status"] == "error"
+        assert final["error"] == {"code": "llm_unavailable", "retryable": True,
+                                  "message": "The language model service is temporarily unavailable."}
 
 
 def test_missing_api_key_gives_clear_error(tmp_path):
@@ -133,3 +142,45 @@ def test_delete_conversation(client):
     ask(client, h, conv, "hello")
     assert client.delete(f"/api/v1/conversations/{conv}", headers=h).status_code == 204
     assert client.get(f"/api/v1/conversations/{conv}", headers=h).status_code == 404
+
+
+def test_keyword_search_recovers_passages_vector_search_misses(tmp_path):
+    # A relevance floor no vector match can reach: only keyword search can find evidence.
+    app = create_app(make_settings(tmp_path, retrieval_min_score=0.99, retrieval_strong_score=0.99),
+                     embedder=FakeEmbedder(), llm_transport=FakeOpenRouter().transport())
+    with TestClient(app) as c:
+        h = ready_user(c)
+        conv = new_conversation(c, h)
+        reply = ask(c, h, conv, "Which new factories were opened?")["assistant_message"]
+        assert reply["status"] == "answered" and reply["sources"][0]["match"] == "keyword"
+        assert "Bavaria" in reply["content"]
+        unrelated = ask(c, h, conv, "What is the boiling point of tungsten?")["assistant_message"]
+        assert unrelated["status"] == "no_answer" and unrelated["sources"] == []
+
+
+def test_regenerate_replaces_failed_reply_without_duplicates(tmp_path):
+    llm = FakeOpenRouter(fail_with=[503, 503, 503])
+    app = create_app(make_settings(tmp_path, retrieval_strong_score=0.2), embedder=FakeEmbedder(),
+                     llm_transport=llm.transport())
+    with TestClient(app) as c:
+        h = ready_user(c)
+        conv = new_conversation(c, h)
+        r = c.post(f"/api/v1/conversations/{conv}/messages", headers=h,
+                   json={"content": "key performance indicators customer retention"})
+        assert r.status_code == 503
+        messages = c.get(f"/api/v1/conversations/{conv}", headers=h).json()["messages"]
+        user_id = messages[0]["id"]
+        assert messages[1]["status"] == "error" and messages[1]["error"]["retryable"] is True
+
+        with c.stream("POST", f"/api/v1/conversations/{conv}/messages/{user_id}/regenerate/stream",
+                      headers=h) as resp:
+            events = parse_sse(resp.read().decode())
+        assert events[-1][0] == "final" and events[-1][1]["status"] == "answered"
+        messages = c.get(f"/api/v1/conversations/{conv}", headers=h).json()["messages"]
+        assert [(m["role"], m["status"]) for m in messages] == [("user", "sent"), ("assistant", "answered")]
+
+        # An answered question cannot be regenerated; unknown ids are 404.
+        url = f"/api/v1/conversations/{conv}/messages/{user_id}/regenerate/stream"
+        assert c.post(url, headers=h).status_code == 409
+        bad = f"/api/v1/conversations/{conv}/messages/nope/regenerate/stream"
+        assert c.post(bad, headers=h).status_code == 404

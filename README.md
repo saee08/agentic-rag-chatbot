@@ -15,10 +15,10 @@ A multi-user web application for asking questions about your own documents. You 
 |---|---|
 | Documents | Multi-file upload with a progress bar and background ingestion with live status (queued, processing, ready, failed). Failed documents can be retried and documents can be deleted. Re-uploading the same file is detected by content hash and skipped. |
 | Parsing | **PDF:** text per page. **DOCX:** paragraphs, tables, headers and footers. **PPTX:** slides, tables, grouped shapes and speaker notes. **CSV:** self-describing row groups. **TXT/MD:** encoding fallback. Files are checked by their actual content, not just the extension (magic bytes, ZIP structure, zip-bomb limits). Size, page-count and text-length limits apply. |
-| Retrieval | Sentence-aware chunks of 180 words with 30 words of overlap, each keeping its page number. Search uses cosine similarity with a calibrated relevance floor and is always restricted to the requesting user's documents. |
+| Retrieval | Sentence-aware chunks of 180 words with 30 words of overlap, each keeping its page number. **Hybrid search**: vector similarity plus full-text keyword search (FTS5 / PostgreSQL `tsvector`), fused by reciprocal rank fusion. Vector search uses cosine similarity with a calibrated relevance floor and is always restricted to the requesting user's documents. |
 | Agent | A bounded decide-and-act loop with typed, permissioned tools. It judges whether the evidence is sufficient, rewrites the search query when it isn't, and stops on hard limits for iterations, tool calls, time and tokens (see [Agent](#agent-execution-flow)). |
-| Answers | Numbered citations with expandable source previews (document, page, passage). Citations that point to non-existent sources are removed, and answers without any valid citation are flagged in the UI. |
-| Chat | Persistent conversations with follow-up context, streamed answers over Server-Sent Events, and a collapsible "How I answered" trace. |
+| Answers | Numbered citations with expandable source previews (document, page, passage). Citations are renumbered 1..n in order of use, overlapping passages from the same page are merged, and citations that point to non-existent sources are removed; and answers without any valid citation are flagged in the UI. |
+| Chat | Persistent conversations with follow-up context, streamed answers over Server-Sent Events, a collapsed-by-default "Answer details" section (user-safe steps, model, latency, tokens), and **Try again** for failed replies. |
 | Security | Accounts protected with scrypt password hashes; bearer tokens stored only as hashes and revocable on logout; every query scoped to its owner; server-generated storage filenames; request size and type limits; rate limiting; a strict CSP and security headers; prompt-injection hardening; a uniform error format that never leaks internal details. |
 | Operations | Structured JSON logs with request IDs and per-stage timings (parse, embed, search, LLM, token usage); `/health` and `/ready` endpoints; Alembic migrations; Docker and Compose files. |
 
@@ -82,7 +82,7 @@ backend/
   pyproject.toml         project metadata, ruff and pytest configuration
   requirements.txt       pinned runtime lock (CPU PyTorch)
   requirements-dev.txt   pinned dev lock
-frontend/                index.html, app.js, styles.css (served at /)
+frontend/                index.html, styles.css, js/ (ES modules: normalize, markdown, dom, api, app), tests/ (node --test)
 Dockerfile, docker-compose.yml, .env.example
 audit/                   production audit, Phase 0 plan, implementation progress notes
 ```
@@ -156,7 +156,7 @@ All settings are environment variables, which can also be placed in `.env`; see 
 |---|---|---|
 | `OPENROUTER_API_KEY` | (none) | API key for the LLM endpoint. Without it, questions return a clear "not configured" error. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compatible endpoint |
-| `LLM_MODEL` | `mistralai/mistral-7b-instruct` | Model id. A stronger instruction-following model gives better planning decisions. |
+| `LLM_MODEL` | `mistralai/mistral-small-3.2-24b-instruct` | Model id. A stronger instruction-following model gives better planning decisions. |
 | `DATABASE_URL` | `sqlite:///./data/app.db` | `postgresql+psycopg://…` in production |
 | `RETRIEVAL_MIN_SCORE` | `0.20` | Relevance floor (see the calibration note below) |
 | `MAX_UPLOAD_MB` / `MAX_FILES_PER_UPLOAD` | `20` / `10` | Upload limits |
@@ -187,12 +187,39 @@ All endpoints except health and auth require `Authorization: Bearer <token>`. Er
 | POST | `/api/v1/documents/{id}/reprocess` | Retry a failed or finished document |
 | POST | `/api/v1/conversations` | Create a conversation |
 | GET | `/api/v1/conversations` | List conversations |
-| GET | `/api/v1/conversations/{id}` | A conversation with its messages, citations and agent trace |
+| GET | `/api/v1/conversations/{id}` | A conversation with its messages (see the message contract below) |
 | DELETE | `/api/v1/conversations/{id}` | Delete a conversation |
 | POST | `/api/v1/conversations/{id}/messages` | Ask a question and get the reply as JSON: `{user_message, assistant_message}` |
-| POST | `/api/v1/conversations/{id}/messages/stream` | Ask a question and get the reply as SSE: `user_message`, then `step` events, then `token` events, then `final` or `error` |
+| POST | `/api/v1/conversations/{id}/messages/stream` | Ask a question and get the reply as SSE: `user_message`, then `step` events, then `token` events, then `final` (the stored message, possibly with `status: "error"`) or `error` (only if nothing could be stored) |
+| POST | `/api/v1/conversations/{id}/messages/{user_message_id}/regenerate/stream` | Re-answer the most recent question after a failed reply. The failed reply is replaced (no duplicates); 409 if it already has an answer. |
 
-An assistant message carries `content`, a `status` (`answered`, `no_answer`, `no_documents`, `direct_reply` or `error`), `citations[]` (number, document id and name, page, score, snippet), `agent_trace[]` and `usage` (tokens, LLM calls, elapsed time, grounded flag).
+**Message contract.** Every message has the same shape, built in one place (`app/services/message_view.py`), which also normalises messages stored by older versions:
+
+```json
+{
+  "id": "…", "role": "assistant", "status": "answered", "created_at": "…",
+  "content": "Northstar Home's central distribution centre is located in **Pune** [1].",
+  "sources": [{
+    "number": 1, "document_id": "…", "document_name": "rag_test_supply_chain_case_study.pdf",
+    "page_number": 1, "chunk_id": "…", "score": 0.63, "match": "semantic+keyword",
+    "excerpt": "… Its central distribution centre (DC) is located in Pune. …",
+    "content": "<the full retrieved passage>"
+  }],
+  "metadata": {
+    "model": "mistralai/mistral-small-3.2-24b-instruct", "latency_ms": 2563, "llm_calls": 2,
+    "tokens": {"prompt": 2184, "completion": 25, "total": 2209}, "grounded": true,
+    "retrieval": {"passages_retrieved": 4, "passages_cited": 1, "documents": 1, "pages": 1}
+  },
+  "steps": [{"kind": "search", "label": "Searched your documents", "detail": "“…” · 4 relevant passages"}],
+  "error": null
+}
+```
+
+- `status`: `sent` (user messages), `answered`, `no_answer`, `no_documents`, `direct_reply` or `error`.
+- `content` is never null. When a stored reply is missing its answer, the message becomes `status: "error"` with `error.code = "internal_error"`.
+- `error` is `{code, message, retryable}` exactly when `status` is `"error"`. The codes are `llm_not_configured` (not retryable), `llm_rate_limited`, `llm_unavailable`, `llm_bad_response` and `internal_error`.
+- `sources[].number` matches the `[n]` markers in `content`. Sources whose document cannot be identified are never returned.
+- `metadata` fields are `null` when unknown; they are never invented. `steps` are user-safe summaries and never include prompts or model reasoning.
 
 > **Migration note:** the prototype's `POST /upload` and `GET /query` endpoints were unauthenticated, shared one corpus across all users and never worked as committed. They have been replaced by the authenticated, per-user endpoints above.
 
@@ -202,9 +229,17 @@ An assistant message carries `content`, a `status` (`answered`, `no_answer`, `no
 
 1. **Upload:** the file is streamed to a temporary file while its size and SHA-256 are computed. Its type is validated from the bytes, it's deduplicated per user by hash, and it's stored as `uploads/<owner_id>/<document_id><ext>`. The original filename is kept only as a display label.
 2. **Ingest** (background): parse into sections (pages or slides), chunk them, embed in batches with MiniLM (normalised vectors), then in **one transaction** replace the document's chunks and mark it `ready`. Chunk ids are `uuid5(document_id, ordinal)`, so re-ingesting never creates duplicates.
-3. **Retrieve:** embed the query, then search only the current user's `ready` documents, keeping the top-k results above `RETRIEVAL_MIN_SCORE`.
+3. **Retrieve (hybrid):** search only the current user's `ready` documents in two ways and fuse the rankings with reciprocal rank fusion:
+   - **vector search**, keeping hits above `RETRIEVAL_MIN_SCORE`;
+   - **keyword search** through the database's full-text index. A keyword hit counts only if it contains at least half of the question's content terms (and at least two of them), so a single shared word can't pull in an unrelated passage.
+
+   Keyword search was added because of a measurement. On the evaluation PDF, the only passage answering "What is the exact reorder point for NH-412?" ranked last by vector similarity (0.18, below the floor); keyword search finds it at rank 2.
 4. **Generate:** the evidence goes to the model as numbered `<source>` blocks marked as untrusted data, with instructions to cite `[n]`, to answer only from the sources and to reply `INSUFFICIENT_EVIDENCE` when they don't contain the answer.
-5. **Verify:** invalid citation numbers are removed, the cited sources are returned with snippets, and answers without a valid citation are flagged `grounded: false`.
+5. **Verify:**
+   - **Arithmetic:** the model never states computed numbers. It writes `[[calc: 11 * 6]]`, which the server evaluates exactly with an arithmetic-only parser. Explicit equations such as "11 × 6 = 72" are recomputed and corrected; one evaluation run showed this exact mistake before the fix.
+   - **Citations:** invalid citation numbers are removed, citations are renumbered in order of use, and overlapping passages from the same page are merged.
+   - **Excerpts:** each source gets an excerpt chosen from the answer sentences that cite it.
+   - **Grounding:** answers without a valid citation are flagged `grounded: false`.
 
 ## Agent execution flow
 
@@ -222,7 +257,7 @@ flowchart TD
     C -- "search_documents(refined query)" --> T[Run tool] --> L
     C -- list_documents --> T
     C -- answer --> GEN
-    C -- cannot_answer --> NA["Reply: not found<br/>(no generation call)"]
+    C -- cannot_answer --> GEN
     C -- direct_reply --> DR[Short conversational reply]
     C -- "invalid / repeated query" --> FB["Safe fallback:<br/>answer if evidence, else not found"]
     GEN{Evidence gathered?} -- no --> NA
@@ -231,6 +266,7 @@ flowchart TD
 
 - **Tools** (`app/agents/tools.py`) take Pydantic inputs (extra fields are forbidden) and return Pydantic outputs. Each tool declares a permission, and the registry refuses tools whose permission wasn't granted. The user id always comes from the server-side auth context, never from model output. Both tools are read-only.
 - **Limits:** a `for` loop over `AGENT_MAX_ITERATIONS`, a cap on tool calls, a wall-clock deadline that is also passed to each LLM request as its timeout, and a token budget that reserves enough for the final answer. Every stop reason is recorded in the trace.
+- **The planner can stop the search but can't skip the answer step when evidence exists.** It only sees short previews, so the answer step reads the full passages and decides, for example, that the documents explicitly don't specify a value.
 - **This is not MCP.** The tool interface is internal; the original prototype's custom "MCP" message class has been removed.
 
 ---
@@ -243,6 +279,9 @@ python -m pytest                   # unit + integration + end-to-end (fake embed
 python -m pytest -m postgres       # same flow on embedded PostgreSQL + pgvector (needs pgserver, in dev deps)
 python -m pytest -m slow           # real MiniLM model: threshold calibration + full flow (downloads ~90 MB)
 python -m ruff check app tests alembic
+
+cd ../frontend
+node --test                        # response normalisation, Markdown parser, null-safe DOM rendering (no dependencies)
 ```
 
 The tests never call a real LLM and never read your `.env`. A scripted fake OpenRouter (`tests/helpers.py`) emulates JSON and SSE responses, failures and rate limits, so the real HTTP client code runs against it. Coverage includes:
@@ -259,14 +298,22 @@ The tests never call a real LLM and never read your `.env`. A scripted fake Open
 - persistence across restarts and recovery of unfinished jobs;
 - migrations (up and down);
 - streaming;
-- the end-to-end flow: upload, wait, ask, check the cited answer, ask something unrelated, delete, and confirm another user can't access anything.
+- the end-to-end flow: upload, wait, ask, check the cited answer, ask something unrelated, delete, and confirm another user can't access anything;
+- the message contract, including legacy, missing, null and malformed stored data;
+- hybrid retrieval and keyword-index sync on delete;
+- deterministic arithmetic, including rejecting anything that isn't arithmetic;
+- citation renumbering and merging;
+- regenerating failed replies;
+- frontend tests (`frontend/tests`) covering valid, missing and null answers, missing or empty sources, missing metadata, failed API responses, unexpected structures, Markdown and safe rendering.
 
 ---
 
 ## Known limitations
 
 - **No OCR.** Scanned or image-only PDFs are rejected with an explanatory message.
-- **Retrieval is dense-vector only,** with no hybrid keyword search or reranker. Exact identifiers (codes, part numbers) may be missed when they aren't semantically distinctive. A reranker or BM25 is the next step if an evaluation set shows retrieval misses.
+- **No reranker.** Hybrid search covers exact identifiers and phrases, but ranking is reciprocal rank fusion of two retrievers rather than a cross-encoder.
+- **Some PDF symbols extract incorrectly.** Fonts without a Unicode map can produce placeholder characters; in the evaluation PDF the rupee sign comes out as "■". The text is shown as extracted and never altered.
+- **The LLM's answer wording varies between runs,** for example "Pune" vs "located in **Pune**". The facts were stable across the evaluation runs reported in `audit/`.
 - **Tabular questions are answered from retrieved rows only.** Questions that need computation over a whole CSV (for example "average of column X") aren't reliably supported.
 - **The planner's quality depends on `LLM_MODEL`.** With small models the controller sometimes returns invalid JSON. The agent then falls back to a safe default and records `fallback: true` in the trace.
 - **Rate limiting and the ingestion thread pool are per process.** Use a proxy-level limiter with several replicas. Very large deployments may want a dedicated worker process.

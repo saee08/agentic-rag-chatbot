@@ -6,6 +6,7 @@ Run from the ``backend`` directory with ``uvicorn app.main:create_app --factory`
 from __future__ import annotations
 
 import logging
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -81,6 +82,10 @@ def create_app(settings: Settings | None = None, *, embedder: Embedder | None = 
         app.include_router(router, prefix=API_PREFIX)
 
     if settings.frontend_dir and settings.frontend_dir.is_dir():
+        # The UI uses ES modules, which browsers only run with a JavaScript MIME type; on Windows
+        # the registry can map .js to text/plain, so register it explicitly.
+        mimetypes.add_type("text/javascript", ".js")
+        mimetypes.add_type("text/css", ".css")
         app.mount("/", StaticFiles(directory=settings.frontend_dir, html=True), name="frontend")
     return app
 

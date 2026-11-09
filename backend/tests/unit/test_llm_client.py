@@ -151,3 +151,10 @@ def test_expired_deadline_fails_fast(tmp_path):
 
     with pytest.raises(LLMUnavailableError, match="ran out of time"):
         client_with(lambda r: ok(), tmp_path).chat(MSGS, deadline=time.monotonic() - 1)
+
+
+def test_unknown_model_gives_actionable_error(tmp_path):
+    client = client_with(lambda r: httpx.Response(404, json={"error": {"message": "No endpoints found"}}), tmp_path,
+                         llm_model="retired/model")
+    with pytest.raises(LLMNotConfiguredError, match="'retired/model' was not found.*LLM_MODEL"):
+        client.chat(MSGS)

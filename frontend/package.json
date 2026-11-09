@@ -1,0 +1,10 @@
+{
+  "name": "lumen-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Framework-free web UI for the document assistant (no build step).",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check js/app.js && node --check js/api.js && node --check js/dom.js && node --check js/markdown.js && node --check js/normalize.js"
+  }
+}

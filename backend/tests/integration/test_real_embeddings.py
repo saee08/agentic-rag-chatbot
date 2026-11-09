@@ -87,6 +87,6 @@ def test_full_flow_with_real_embeddings(tmp_path, embedder):
         assert wait_for_document(client, h, doc["id"])["status"] == "ready"
         conv = new_conversation(client, h)
         reply = ask(client, h, conv, "What were the key performance indicators?")["assistant_message"]
-        assert reply["status"] == "answered" and reply["citations"]
+        assert reply["status"] == "answered" and reply["sources"]
         unrelated = ask(client, h, conv, "What is the boiling point of tungsten?")["assistant_message"]
         assert unrelated["status"] == "no_answer"

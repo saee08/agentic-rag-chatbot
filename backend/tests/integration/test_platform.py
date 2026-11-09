@@ -144,7 +144,9 @@ def test_frontend_is_served(tmp_path):
     with TestClient(app) as c:
         r = c.get("/")
         assert r.status_code == 200 and "<title>" in r.text
-        assert c.get("/app.js").status_code == 200
+        js = c.get("/js/app.js")
+        assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript")
+        assert c.get("/styles.css").headers["content-type"].startswith("text/css")
 
 
 def test_job_claim_is_exclusive_and_respects_live_workers(client):
@@ -163,3 +165,18 @@ def test_job_claim_is_exclusive_and_respects_live_workers(client):
     assert container.ingestion._claim(pending_id) is not None  # first claimant wins
     assert container.ingestion._claim(pending_id) is None  # second loses
     assert container.ingestion._claim(live_id) is None  # a job running elsewhere is left alone
+
+
+def test_keyword_index_follows_chunk_deletes(client):
+    from sqlalchemy import text
+
+    h = auth_headers(client)
+    doc = upload(client, h, "acme.txt", ACME_REPORT.encode())["items"][0]["document"]
+    wait_for_document(client, h, doc["id"])
+    db = client.app.state.container.db
+    count = "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH 'Bavaria'"
+    with db.transaction() as s:
+        assert s.execute(text(count)).scalar() == 1
+    assert client.delete(f"/api/v1/documents/{doc['id']}", headers=h).status_code == 204
+    with db.transaction() as s:  # removed via the FK cascade, which fires the FTS trigger
+        assert s.execute(text(count)).scalar() == 0

@@ -42,6 +42,8 @@ def test_full_flow_on_postgres_pgvector(tmp_path, pg_url):
                 "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_chunks_embedding_hnsw'"
             )).scalar()
             assert "hnsw" in indexdef and "vector_cosine_ops" in indexdef
+            fts = conn.execute(text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_chunks_text_fts'")).scalar()
+            assert "gin" in fts and "to_tsvector('english'" in fts
 
         alice, bob = auth_headers(client, "alice@example.com"), auth_headers(client, "bob@example.com")
         doc = upload(client, alice, "acme.pdf", make_pdf([ACME_REPORT]))["items"][0]["document"]
@@ -51,8 +53,8 @@ def test_full_flow_on_postgres_pgvector(tmp_path, pg_url):
         conv = new_conversation(client, alice)
         reply = ask(client, alice, conv, "What were the key performance indicators?")["assistant_message"]
         assert reply["status"] == "answered" and "94 percent" in reply["content"]
-        assert reply["citations"][0]["document_id"] == doc["id"] and reply["citations"][0]["page"] == 1
-        assert all("Bob notes" not in c["snippet"] for c in reply["citations"])
+        assert reply["sources"][0]["document_id"] == doc["id"] and reply["sources"][0]["page_number"] == 1
+        assert all("Bob notes" not in c["content"] for c in reply["sources"])
 
         unrelated = ask(client, alice, conv, "What is the boiling point of tungsten?")["assistant_message"]
         assert unrelated["status"] == "no_answer"

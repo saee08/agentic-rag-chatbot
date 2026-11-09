@@ -37,10 +37,11 @@ def test_controller_prompt_marks_observations_untrusted():
 
 
 def test_valid_citations_are_kept_and_mapped():
-    checked = check_answer("Revenue was 4.2B [2]. Retention was 94% [1, 2].", [ev(1), ev(2)])
+    checked = check_answer("Revenue was 4.2B [2]. Retention was 94% [1, 2].", [ev(1, "r"), ev(2, "s")])
     assert checked.grounded
-    assert [c.number for c in checked.cited] == [1, 2]
-    assert checked.text == "Revenue was 4.2B [2]. Retention was 94% [1][2]."
+    # Renumbered in order of first appearance: old [2] -> [1], old [1] -> [2].
+    assert checked.text == "Revenue was 4.2B [1]. Retention was 94% [1][2]."
+    assert [(c.number, c.text) for c in checked.cited] == [(1, "s"), (2, "r")]
 
 
 def test_hallucinated_citations_are_removed():

@@ -176,6 +176,10 @@ class LLMClient:
             raise LLMRateLimitedError("The language model is rate-limited. Please try again shortly.")
         if status in (401, 403):
             raise LLMNotConfiguredError("The language model rejected the API credentials.")
+        if status == 404:
+            raise LLMNotConfiguredError(
+                f"The model '{self.model}' was not found at the provider. Set LLM_MODEL to an available model id."
+            )
         if status >= 500 or status in _RETRY_STATUS:
             raise LLMUnavailableError("The language model service is temporarily unavailable.")
         raise LLMBadResponseError(f"The language model request was rejected (HTTP {status}).")

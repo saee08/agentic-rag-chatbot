@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # --- LLM (OpenRouter / any OpenAI-compatible endpoint) ------------------------------------
     openrouter_api_key: SecretStr | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = "mistralai/mistral-7b-instruct"
+    llm_model: str = "mistralai/mistral-small-3.2-24b-instruct"
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     llm_max_tokens: int = Field(default=800, ge=16)
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
